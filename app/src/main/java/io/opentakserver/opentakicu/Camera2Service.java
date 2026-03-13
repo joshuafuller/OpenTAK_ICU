@@ -441,9 +441,22 @@ public class Camera2Service extends Service implements ConnectChecker,
 
     public void startPreview(OpenGlView openGlView) {
         this.openGlView = openGlView;
+        // For screen source, never show screen capture in the local preview while streaming,
+        // to avoid a recursive feedback loop. Preview is only used as a camera fallback.
+        if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN) && getStream().isStreaming()) {
+            Log.d(LOGTAG, "Skipping local preview: streaming screen");
+            return;
+        }
         if (!getStream().isOnPreview()) {
             Log.d(LOGTAG, "Starting Preview");
-            getStream().startPreview(openGlView, true);
+            try {
+                getStream().startPreview(openGlView, true);
+            } catch (SecurityException e) {
+                Log.e(LOGTAG, "Failed to start preview, MediaProjection is no longer valid", e);
+                if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                    mediaProjection = null;
+                }
+            }
         } else {
             Log.e(LOGTAG, "not starting preview");
         }
@@ -877,9 +890,20 @@ public class Camera2Service extends Service implements ConnectChecker,
             Log.d(LOGTAG, "enabling audio");
         }
 
-        // Only start preview when video was prepared; skip when screen is selected but MediaProjection not yet granted (avoids GL crash).
+        // Only start preview when video was prepared. For screen capture, a stale MediaProjection
+        // can cause "Cannot create VirtualDisplay with non-current MediaProjection"; handle that
+        // gracefully instead of crashing.
         if (openGlView != null && prepareVideo) {
-            getStream().startPreview(openGlView, true);
+            try {
+                getStream().startPreview(openGlView, true);
+            } catch (SecurityException e) {
+                Log.e(LOGTAG, "Failed to start preview, MediaProjection is no longer valid", e);
+                // If screen capture is selected, clear the projection so the app knows it must
+                // re-request permission before using screen again.
+                if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                    mediaProjection = null;
+                }
+            }
         }
 
         Log.d(LOGTAG, "PrepareVideo: ".concat(String.valueOf(prepareVideo)).concat(" Audio ").concat(String.valueOf(prepareAudio)));
@@ -1252,6 +1276,12 @@ public class Camera2Service extends Service implements ConnectChecker,
                     }
 
                     showNotification(getString(R.string.stream_in_progress), true);
+                }
+
+                // When streaming screen, stop local preview so we don't recursively display the captured screen.
+                if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN) && getStream().isOnPreview()) {
+                    Log.d(LOGTAG, "Stopping local preview while streaming screen");
+                    getStream().stopPreview();
                 }
 
                 startRecording();

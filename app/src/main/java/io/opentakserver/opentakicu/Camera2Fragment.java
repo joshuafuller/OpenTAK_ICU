@@ -183,6 +183,13 @@ public class Camera2Fragment extends Fragment
                 }
 
                 setStatusState();
+                // If we were in screen mode and the stream stopped externally (e.g. network),
+                // try to restore the local camera preview.
+                String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource != null && videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)
+                        && camera_service != null && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                    camera_service.startPreview(openGlView);
+                }
             } else if (action != null && action.equals(Camera2Service.TOOK_PICTURE)) {
                 activity.runOnUiThread(() -> whiteOverlay.setVisibility(View.INVISIBLE));
             } else if (action != null && action.equals(Camera2Service.NEW_BITRATE)) {
@@ -520,6 +527,12 @@ public class Camera2Fragment extends Fragment
                 service_bound = false;
                 unlockScreenOrientation();
                 setStatusState();
+                // After stopping a screen stream, return to local camera preview.
+                String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource != null && videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)
+                        && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                    camera_service.startPreview(openGlView);
+                }
             }
         } else if (id == R.id.switch_camera) {
             camera_service.switchCamera();
@@ -637,6 +650,13 @@ public class Camera2Fragment extends Fragment
         Log.d(LOGTAG, "Got pref " + s);
         if (s != null && s.equals(Preferences.VIDEO_SOURCE)) {
             setZoomRange();
+            // If video source is no longer Screen, hide the screen-capture overlay.
+            if (screenCaptureOverlay != null) {
+                String videoSource = sharedPreferences.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource == null || !videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                    screenCaptureOverlay.setVisibility(View.GONE);
+                }
+            }
         }
     }
 

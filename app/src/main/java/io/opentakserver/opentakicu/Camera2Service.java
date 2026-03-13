@@ -70,6 +70,7 @@ import android.util.SizeF;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.WindowManager;
+import android.view.View;
 import android.widget.Toast;
 
 import com.ctc.wstx.stax.WstxInputFactory;
@@ -556,7 +557,9 @@ public class Camera2Service extends Service implements ConnectChecker,
     public void tapToFocus(MotionEvent motionEvent) {
         if (videoSource.equals(Preferences.VIDEO_SOURCE_DEFAULT)) {
             Camera2Source camera2Source = (Camera2Source) getStream().getVideoSource();
-            camera2Source.tapToFocus(motionEvent);
+            if (openGlView != null) {
+                camera2Source.tapToFocus((View) openGlView, motionEvent);
+            }
         }
     }
 

@@ -130,6 +130,21 @@ public class PopupMenuHandler implements SharedPreferences.OnSharedPreferenceCha
 
             return true;
         }
+        if (item == R.id.video_source_screen) {
+            SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
+            if (!camera2Service.getStream().isStreaming() && !camera2Service.getStream().isRecording()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    preferences.edit().putString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_SCREEN).apply();
+                    flashlight.setImageResource(R.drawable.flashlight_off);
+                } else {
+                    Toast.makeText(context, "Screen streaming requires Android 5.0 or higher", Toast.LENGTH_LONG).show();
+                }
+            } else {
+                Toast.makeText(context, "Can't switch video sources while streaming or recording", Toast.LENGTH_LONG).show();
+            }
+
+            return true;
+        }
 
         if (item == R.id.exit) {
             AlertDialog.Builder builder = new AlertDialog.Builder(context);

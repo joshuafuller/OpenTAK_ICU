@@ -55,6 +55,8 @@ import android.location.LocationManager;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Binder;
@@ -67,6 +69,7 @@ import android.provider.MediaStore;
 import android.util.Log;
 import android.util.Size;
 import android.util.SizeF;
+import android.view.Display;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.WindowManager;
@@ -82,9 +85,11 @@ import com.fasterxml.jackson.dataformat.xml.XmlMapper;
 import com.pedro.common.AudioCodec;
 import com.pedro.common.ConnectChecker;
 import com.pedro.common.VideoCodec;
+import com.pedro.encoder.input.sources.audio.InternalAudioSource;
 import com.pedro.encoder.input.sources.audio.MicrophoneSource;
 import com.pedro.encoder.input.sources.audio.NoAudioSource;
 import com.pedro.encoder.input.sources.video.Camera2Source;
+import com.pedro.encoder.input.sources.video.ScreenSource;
 import com.pedro.encoder.input.sources.video.VideoSource;
 import com.pedro.encoder.input.video.CameraHelper;
 import com.pedro.encoder.utils.CodecUtil;
@@ -202,6 +207,10 @@ public class Camera2Service extends Service implements ConnectChecker,
     private boolean exiting = false;
     private final IBinder binder = new LocalBinder();
 
+    // Screen capture (MediaProjection) support
+    private MediaProjection mediaProjection;
+    private MediaProjectionManager mediaProjectionManager;
+
     private File folder;
     private String currentDateAndTime;
     public static MutableLiveData<Camera2Service> observer = new MutableLiveData<>();
@@ -249,6 +258,10 @@ public class Camera2Service extends Service implements ConnectChecker,
 
         folder = PathUtils.getRecordPath();
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            mediaProjectionManager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(channelId, LOGTAG, NotificationManager.IMPORTANCE_HIGH);
             notificationManager.createNotificationChannel(channel);
@@ -258,7 +271,9 @@ public class Camera2Service extends Service implements ConnectChecker,
 
         int type = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE|ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
         }
 
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
@@ -341,12 +356,18 @@ public class Camera2Service extends Service implements ConnectChecker,
         if (videoSource.equals(Preferences.VIDEO_SOURCE_USB)) {
             Log.d(LOGTAG, "returning new usb cam");
             return new CameraUvcSource();
-        }
-        else {
+        } else if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            Log.d(LOGTAG, "returning new screen source");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaProjection != null) {
+                return new ScreenSource(getApplicationContext(), mediaProjection);
+            } else {
+                Log.w(LOGTAG, "Screen source requested but MediaProjection is not available, falling back to Camera2");
+                return new Camera2Source(getApplicationContext());
+            }
+        } else {
             Log.d(LOGTAG, "returning new cam2");
             return new Camera2Source(getApplicationContext());
         }
-
     }
 
     private NotificationCompat.Action startStreamAction() {
@@ -432,6 +453,50 @@ public class Camera2Service extends Service implements ConnectChecker,
         if (getStream().isOnPreview()) {
             Log.d(LOGTAG, "Stopping Preview");
             getStream().stopPreview();
+        }
+    }
+
+    /**
+     * Returns true if a MediaProjection for screen capture has already been obtained.
+     */
+    public boolean hasScreenCapture() {
+        return mediaProjection != null;
+    }
+
+    /**
+     * Create an intent to request screen capture permission from the user.
+     * Only valid on API 21+.
+     */
+    public Intent createScreenCaptureIntent() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaProjectionManager != null) {
+            return mediaProjectionManager.createScreenCaptureIntent();
+        }
+        return null;
+    }
+
+    /**
+     * Store the MediaProjection returned from the screen capture permission dialog.
+     */
+    public boolean setScreenCaptureResult(int resultCode, Intent data) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP || mediaProjectionManager == null) {
+            Log.e(LOGTAG, "MediaProjection not supported on this device");
+            return false;
+        }
+        try {
+            if (mediaProjection != null) {
+                mediaProjection.stop();
+            }
+            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data);
+            if (mediaProjection == null) {
+                Log.e(LOGTAG, "Failed to get MediaProjection");
+                return false;
+            }
+            Log.d(LOGTAG, "MediaProjection acquired");
+            return true;
+        } catch (Exception e) {
+            Log.e(LOGTAG, "Error setting MediaProjection result", e);
+            mediaProjection = null;
+            return false;
         }
     }
 
@@ -568,6 +633,10 @@ public class Camera2Service extends Service implements ConnectChecker,
         observer.postValue(null);
         unregisterReceiver(receiver);
         preferences.unregisterOnSharedPreferenceChangeListener(this);
+        if (mediaProjection != null) {
+            mediaProjection.stop();
+            mediaProjection = null;
+        }
     }
 
     @Override
@@ -773,6 +842,16 @@ public class Camera2Service extends Service implements ConnectChecker,
         if (videoSource.equals(Preferences.VIDEO_SOURCE_USB)) {
             prepareVideo = getStream().prepareVideo(width, height, bitrate, fps);
             getStream().changeVideoSource(new CameraUvcSource());
+        } else if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaProjection != null) {
+                prepareVideo = getStream().prepareVideo(width, height, bitrate, fps);
+                getStream().changeVideoSource(new ScreenSource(getApplicationContext(), mediaProjection));
+            } else {
+                // No MediaProjection yet: use camera for preview so the user sees something until they tap Start and grant permission.
+                Log.d(LOGTAG, "Screen selected but MediaProjection not available; using camera for preview");
+                prepareVideo = getStream().prepareVideo(width, height, bitrate, fps, 2, CameraHelper.getCameraOrientation(getApplicationContext()));
+                getStream().changeVideoSource(new Camera2Source(getApplicationContext()));
+            }
         } else {
             prepareVideo = getStream().prepareVideo(width, height, bitrate, fps, 2, CameraHelper.getCameraOrientation(getApplicationContext()));
             getStream().changeVideoSource(new Camera2Source(getApplicationContext()));
@@ -784,13 +863,24 @@ public class Camera2Service extends Service implements ConnectChecker,
         if (!enable_audio) {
             Log.d(LOGTAG, "disabling audio");
             getStream().changeAudioSource(new NoAudioSource());
+        } else if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            // Screen streaming: use internal audio on API 29+ when available, else microphone.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && mediaProjection != null) {
+                Log.d(LOGTAG, "enabling internal audio for screen capture");
+                getStream().changeAudioSource(new InternalAudioSource(mediaProjection, null));
+            } else {
+                Log.d(LOGTAG, "enabling microphone audio for screen capture");
+                getStream().changeAudioSource(new MicrophoneSource());
+            }
         } else {
             getStream().changeAudioSource(new MicrophoneSource());
             Log.d(LOGTAG, "enabling audio");
         }
 
-        if (openGlView != null)
+        // Only start preview when video was prepared; skip when screen is selected but MediaProjection not yet granted (avoids GL crash).
+        if (openGlView != null && prepareVideo) {
             getStream().startPreview(openGlView, true);
+        }
 
         Log.d(LOGTAG, "PrepareVideo: ".concat(String.valueOf(prepareVideo)).concat(" Audio ").concat(String.valueOf(prepareAudio)));
         return prepareVideo && prepareAudio;
@@ -920,9 +1010,42 @@ public class Camera2Service extends Service implements ConnectChecker,
         }
     }
 
+    private void getScreenResolution() {
+        if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            try {
+                WindowManager windowManager = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
+                if (windowManager == null) {
+                    Log.e(LOGTAG, "WindowManager is null, unable to determine screen resolution");
+                    return;
+                }
+
+                int width;
+                int height;
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.WindowMetrics metrics = windowManager.getCurrentWindowMetrics();
+                    width = metrics.getBounds().width();
+                    height = metrics.getBounds().height();
+                } else {
+                    Display display = windowManager.getDefaultDisplay();
+                    android.graphics.Point size = new android.graphics.Point();
+                    display.getRealSize(size);
+                    width = size.x;
+                    height = size.y;
+                }
+
+                resolution = new Size(width, height);
+                Log.i(LOGTAG, "Got screen Res " + width + " x " + height);
+            } catch (Exception e) {
+                Log.e(LOGTAG, "Failed to get screen resolution", e);
+            }
+        }
+    }
+
     private void getResolutions() {
         getCamera2Resolutions();
         getUsbResolution();
+        getScreenResolution();
     }
 
     @Override

@@ -272,8 +272,7 @@ public class Camera2Service extends Service implements ConnectChecker,
         int type = 0;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
         }
 
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
@@ -488,6 +487,21 @@ public class Camera2Service extends Service implements ConnectChecker,
     }
 
     /**
+     * Switch to a foreground service with MEDIA_PROJECTION type before launching the screen
+     * capture permission dialog. Required on API 34+ so that getMediaProjection() can succeed
+     * when the user grants permission.
+     */
+    public void prepareForScreenCapture() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            int typeWithProjection = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                    | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            Notification notification = showNotification(getString(R.string.ready_to_stream), true);
+            startForeground(notifyId, notification, typeWithProjection);
+        }
+    }
+
+    /**
      * Store the MediaProjection returned from the screen capture permission dialog.
      */
     public boolean setScreenCaptureResult(int resultCode, Intent data) {
@@ -505,6 +519,14 @@ public class Camera2Service extends Service implements ConnectChecker,
                 return false;
             }
             Log.d(LOGTAG, "MediaProjection acquired");
+            // Add mediaProjection to foreground service type so we're allowed to use it (API 34+).
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                int typeWithProjection = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                        | ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                        | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+                Notification notification = showNotification(getString(R.string.ready_to_stream), true);
+                startForeground(notifyId, notification, typeWithProjection);
+            }
             return true;
         } catch (Exception e) {
             Log.e(LOGTAG, "Error setting MediaProjection result", e);

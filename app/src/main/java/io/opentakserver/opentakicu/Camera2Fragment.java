@@ -501,6 +501,12 @@ public class Camera2Fragment extends Fragment
                     if (!camera_service.hasScreenCapture()) {
                         Intent captureIntent = camera_service.createScreenCaptureIntent();
                         if (captureIntent != null) {
+                            try {
+                                camera_service.prepareForScreenCapture();
+                            } catch (SecurityException e) {
+                                Toast.makeText(activity, R.string.error_preparing_stream, Toast.LENGTH_LONG).show();
+                                return;
+                            }
                             bStartStop.setImageResource(R.drawable.stop);
                             lockScreenOrientation();
                             screenCaptureLauncher.launch(captureIntent);

@@ -259,7 +259,9 @@ public class Camera2Fragment extends Fragment
                         } else {
                             // Already bound (e.g. camera fallback preview); re-prepare with ScreenSource and start streaming.
                             camera_service.startStream();
-                            camera_service.startPreview(openGlView);
+                            if (openGlView != null) {
+                                openGlView.setVisibility(View.INVISIBLE);
+                            }
                         }
                         bStartStop.setImageResource(R.drawable.stop);
                         lockScreenOrientation();
@@ -269,6 +271,7 @@ public class Camera2Fragment extends Fragment
                         }
                         if (screenCaptureOverlay != null) {
                             screenCaptureOverlay.setVisibility(View.VISIBLE);
+                            screenCaptureOverlay.bringToFront();
                         }
                     } else {
                         Toast.makeText(activity, "Screen capture permission denied", Toast.LENGTH_LONG).show();
@@ -468,7 +471,11 @@ public class Camera2Fragment extends Fragment
     private final ServiceConnection mConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder service) {
             Log.d(LOGTAG, "onServiceConnected");
-            camera_service.startPreview(openGlView);
+            String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+            // For screen mode, don't start preview before startStream; that can leave camera fallback active.
+            if (!Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource)) {
+                camera_service.startPreview(openGlView);
+            }
             service_bound = true;
             bStartStop.setImageResource(R.drawable.stop);
             tvLocationFix.setText(R.string.no);
@@ -476,6 +483,16 @@ public class Camera2Fragment extends Fragment
             tvTakServer.setText(R.string.no);
             tvTakServer.setTextColor(Color.RED);
             camera_service.startStream();
+            if (Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource) && camera_service.hasScreenCapture()) {
+                setPreviewSurfaceSecure(true);
+                if (openGlView != null) {
+                    openGlView.setVisibility(View.INVISIBLE);
+                }
+                if (screenCaptureOverlay != null) {
+                    screenCaptureOverlay.setVisibility(View.VISIBLE);
+                    screenCaptureOverlay.bringToFront();
+                }
+            }
             popupMenuHandler.stopClock();
             popupMenuHandler.toggleText();
         }
@@ -551,6 +568,16 @@ public class Camera2Fragment extends Fragment
                             unlockScreenOrientation();
                         }
                         return;
+                    } else {
+                        // We already have capture permission; set local UI state immediately.
+                        setPreviewSurfaceSecure(true);
+                        if (openGlView != null) {
+                            openGlView.setVisibility(View.INVISIBLE);
+                        }
+                        if (screenCaptureOverlay != null) {
+                            screenCaptureOverlay.setVisibility(View.VISIBLE);
+                            screenCaptureOverlay.bringToFront();
+                        }
                     }
                 }
 

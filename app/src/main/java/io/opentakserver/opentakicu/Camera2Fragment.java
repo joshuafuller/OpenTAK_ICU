@@ -83,6 +83,7 @@ public class Camera2Fragment extends Fragment
     private Slider zoomSlider;
 
     private boolean service_bound = false;
+    private boolean awaitingScreenCapturePermission = false;
     private Camera2Service camera_service;
     private long last_fix_time = 0;
     private FirebaseAnalytics mFirebaseAnalytics;
@@ -254,6 +255,7 @@ public class Camera2Fragment extends Fragment
         screenCaptureLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
+                    awaitingScreenCapturePermission = false;
                     if (activity == null) return;
                     if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null && camera_service != null) {
                         boolean prepared = camera_service.setScreenCaptureResult(result.getResultCode(), result.getData());
@@ -378,6 +380,12 @@ public class Camera2Fragment extends Fragment
         }
         if (openGlView != null) {
             openGlView.setVisibility(View.VISIBLE);
+        }
+        // Launching the Android screen-capture chooser briefly pauses this fragment; avoid
+        // tearing down camera/GL preview during that handoff to reduce dead-thread callback noise.
+        if (awaitingScreenCapturePermission) {
+            Log.d(LOGTAG, "onPause while awaiting screen-capture permission; keeping preview alive");
+            return;
         }
         if (camera_service != null)
             camera_service.stopPreview();
@@ -573,6 +581,7 @@ public class Camera2Fragment extends Fragment
                                 Toast.makeText(activity, R.string.error_preparing_stream, Toast.LENGTH_LONG).show();
                                 return;
                             }
+                            awaitingScreenCapturePermission = true;
                             bStartStop.setImageResource(R.drawable.stop);
                             lockScreenOrientation();
                             screenCaptureLauncher.launch(captureIntent);

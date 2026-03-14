@@ -888,7 +888,7 @@ public class Camera2Service extends Service implements ConnectChecker,
 
         addCert();
 
-        if (prepareVideo)
+        if (getStream().isOnPreview())
             getStream().stopPreview();
 
         if (videoSource.equals(Preferences.VIDEO_SOURCE_USB)) {
@@ -1355,11 +1355,8 @@ public class Camera2Service extends Service implements ConnectChecker,
 
     public void stopStream(String error, String broadcastIntent) {
         Log.d(LOGTAG, "stopStream " + error);
-        if (getStream().isStreaming())
-            getStream().stopStream();
-
-        // Android 14+ may invalidate MediaProjection tokens after a capture session ends.
-        // Explicitly drop the token here so the next screen-stream start requests fresh permission.
+        // Stop projection first while source callbacks/threads are still alive, to reduce
+        // dead-thread callback warnings when MediaProjection dispatches onStop.
         if (mediaProjection != null) {
             try {
                 mediaProjection.unregisterCallback(mediaProjectionCallback);
@@ -1371,6 +1368,9 @@ public class Camera2Service extends Service implements ConnectChecker,
             }
             mediaProjection = null;
         }
+
+        if (getStream().isStreaming())
+            getStream().stopStream();
 
         if (tcpClient != null) {
             Log.d(LOGTAG, "Stopping TcpClient");

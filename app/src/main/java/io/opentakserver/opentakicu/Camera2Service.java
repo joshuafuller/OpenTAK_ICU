@@ -210,6 +210,15 @@ public class Camera2Service extends Service implements ConnectChecker,
     // Screen capture (MediaProjection) support
     private MediaProjection mediaProjection;
     private MediaProjectionManager mediaProjectionManager;
+    private final MediaProjection.Callback mediaProjectionCallback = new MediaProjection.Callback() {
+        @Override
+        public void onStop() {
+            Log.d(LOGTAG, "MediaProjection callback onStop: invalidating projection token");
+            mediaProjection = null;
+        }
+    };
+    // True only while startStream() is preparing encoders for an imminent stream start.
+    private boolean preparingStreamStart = false;
 
     private File folder;
     private String currentDateAndTime;
@@ -446,6 +455,13 @@ public class Camera2Service extends Service implements ConnectChecker,
             Log.d(LOGTAG, "Skipping local preview: streaming screen");
             return;
         }
+        // If screen mode is selected but we're not actively streaming, make sure preview uses
+        // camera fallback instead of a potentially stale ScreenSource.
+        if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN) && !getStream().isStreaming()) {
+            Log.d(LOGTAG, "Screen mode idle: reconfiguring preview to camera fallback");
+            prepareEncoders();
+            return;
+        }
         if (!getStream().isOnPreview()) {
             Log.d(LOGTAG, "Starting Preview");
             try {
@@ -518,6 +534,7 @@ public class Camera2Service extends Service implements ConnectChecker,
                 Log.e(LOGTAG, "Failed to get MediaProjection");
                 return false;
             }
+            mediaProjection.registerCallback(mediaProjectionCallback, new Handler(Looper.getMainLooper()));
             Log.d(LOGTAG, "MediaProjection acquired");
             // Add mediaProjection to foreground service type so we're allowed to use it (API 34+).
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -878,7 +895,12 @@ public class Camera2Service extends Service implements ConnectChecker,
             prepareVideo = getStream().prepareVideo(width, height, bitrate, fps);
             getStream().changeVideoSource(new CameraUvcSource());
         } else if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && mediaProjection != null) {
+            // Only use ScreenSource while actually starting/doing a stream. During idle settings
+            // changes, keep camera fallback preview to avoid stale MediaProjection issues.
+            boolean useScreenSourceNow = getStream().isStreaming() || preparingStreamStart;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP
+                    && mediaProjection != null
+                    && useScreenSourceNow) {
                 prepareVideo = getStream().prepareVideo(width, height, bitrate, fps);
                 getStream().changeVideoSource(new ScreenSource(getApplicationContext(), mediaProjection));
             } else {
@@ -924,6 +946,8 @@ public class Camera2Service extends Service implements ConnectChecker,
                 // re-request permission before using screen again.
                 if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
                     mediaProjection = null;
+                    // Force prepare failure so startStream won't proceed with an invalid ScreenSource.
+                    prepareVideo = false;
                 }
             }
         }
@@ -1177,7 +1201,14 @@ public class Camera2Service extends Service implements ConnectChecker,
                 rtspStreamClient.setProtocol(Protocol.UDP);
             }
 
-            if (getStream().isRecording() || prepareEncoders()) {
+            boolean encodersPrepared;
+            preparingStreamStart = true;
+            try {
+                encodersPrepared = prepareEncoders();
+            } finally {
+                preparingStreamStart = false;
+            }
+            if (getStream().isRecording() || encodersPrepared) {
 
                 if (!protocol.equals("srt") && !protocol.startsWith("udp") && !username.isEmpty() && !password.isEmpty()) {
                     try {
@@ -1274,7 +1305,16 @@ public class Camera2Service extends Service implements ConnectChecker,
                 }
 
                 if (stream) {
-                    getStream().startStream(url);
+                    try {
+                        getStream().startStream(url);
+                    } catch (SecurityException e) {
+                        Log.e(LOGTAG, "Failed to start stream, MediaProjection is no longer valid", e);
+                        if (videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                            mediaProjection = null;
+                            showNotification(getString(R.string.error_preparing_stream), false);
+                        }
+                        return;
+                    }
                     Log.d(LOGTAG, "Started stream to ".concat(url));
                     if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
                             ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -1317,6 +1357,20 @@ public class Camera2Service extends Service implements ConnectChecker,
         Log.d(LOGTAG, "stopStream " + error);
         if (getStream().isStreaming())
             getStream().stopStream();
+
+        // Android 14+ may invalidate MediaProjection tokens after a capture session ends.
+        // Explicitly drop the token here so the next screen-stream start requests fresh permission.
+        if (mediaProjection != null) {
+            try {
+                mediaProjection.unregisterCallback(mediaProjectionCallback);
+            } catch (Exception ignored) {
+            }
+            try {
+                mediaProjection.stop();
+            } catch (Exception ignored) {
+            }
+            mediaProjection = null;
+        }
 
         if (tcpClient != null) {
             Log.d(LOGTAG, "Stopping TcpClient");

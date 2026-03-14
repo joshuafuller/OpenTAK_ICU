@@ -47,10 +47,10 @@ is minimized or the screen is off.
 - Take photos while recording or streaming
 - Change between front and back cameras during stream
 - Adaptive bitrate
+- Stream your device's screen instead of camera
 
 ## Planned features
 - KLV
-- Stream your device's screen instead of camera
 - USB camera support
 
 ## Servers

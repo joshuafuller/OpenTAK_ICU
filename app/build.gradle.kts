@@ -15,7 +15,6 @@ plugins {
     id("com.android.application")
     id("com.google.gms.google-services")
     id("com.google.firebase.crashlytics")
-    id("io.github.reactivecircus.app-versioning") version "1.3.2"
 }
 
 android {
@@ -26,6 +25,8 @@ android {
         applicationId = "io.opentakserver.opentakicu"
         minSdk = 26
         targetSdk = 35
+        versionCode = 1
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -40,7 +41,7 @@ android {
         create("release") {
             keyAlias = keystoreProperties["RELEASE_KEY_ALIAS"] as String
             keyPassword = keystoreProperties["RELEASE_KEY_PASSWORD"] as String
-            storeFile = file("../../android_cert.jks")
+            storeFile = file("../android_cert.jks")
             storePassword = keystoreProperties["RELEASE_STORE_PASSWORD"] as String
         }
     }
@@ -48,7 +49,7 @@ android {
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("release")
         }
 

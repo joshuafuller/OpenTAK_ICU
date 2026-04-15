@@ -31,6 +31,10 @@ import java.util.ArrayList;
 import androidx.annotation.NonNull;
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.widget.TextViewCompat;
 import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
@@ -257,6 +261,25 @@ public class OnBoardingActivity extends AppIntro {
         setNextArrowColor(colorAccent);
         setBackArrowColor(colorAccent);
         setColorDoneText(colorAccent);
+
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        applyAppIntroSystemBarInsets();
+    }
+
+    private void applyAppIntroSystemBarInsets() {
+        View root = findViewById(com.github.appintro.R.id.background);
+        if (root == null) {
+            Log.w(LOGTAG, "AppIntro background root missing; cannot apply system bar insets");
+            return;
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(root, (v, windowInsets) -> {
+            int mask = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
+            Insets bars = windowInsets.getInsets(mask);
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return WindowInsetsCompat.CONSUMED;
+        });
+        ViewCompat.requestApplyInsets(root);
+        root.post(() -> ViewCompat.requestApplyInsets(root));
     }
 
     private void handleIntentImport() {

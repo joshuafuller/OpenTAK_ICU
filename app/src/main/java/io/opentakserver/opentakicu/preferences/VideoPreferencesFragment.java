@@ -103,13 +103,21 @@ public class VideoPreferencesFragment extends PreferenceFragmentCompat implement
         resolutions.setEntryValues(resolutionsInts.toArray(new CharSequence[resolutionsInts.size()]));
 
         String video_source = prefs.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
-        if (!video_source.equals(Preferences.VIDEO_SOURCE_USB)) {
+        if (video_source.equals(Preferences.VIDEO_SOURCE_USB)) {
+            findPreference(Preferences.USB_WIDTH).setEnabled(true);
+            findPreference(Preferences.USB_HEIGHT).setEnabled(true);
+            findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(false);
+        } else if (video_source.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            // Screen streaming uses the device's display resolution; make both camera and USB resolution fields read-only.
             findPreference(Preferences.USB_WIDTH).setEnabled(false);
             findPreference(Preferences.USB_HEIGHT).setEnabled(false);
-        }
-
-        if (!video_source.equals(Preferences.VIDEO_SOURCE_DEFAULT))
             findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(false);
+        } else {
+            // Default camera2 source
+            findPreference(Preferences.USB_WIDTH).setEnabled(false);
+            findPreference(Preferences.USB_HEIGHT).setEnabled(false);
+            findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(true);
+        }
 
         findPreference(Preferences.CHROMA_KEY_BACKGROUND).setOnPreferenceClickListener(this);
     }
@@ -133,14 +141,18 @@ public class VideoPreferencesFragment extends PreferenceFragmentCompat implement
     @Override
     public void onSharedPreferenceChanged(SharedPreferences sharedPreferences, @Nullable String s) {
         String video_source = prefs.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
-        if (!video_source.equals("usb")) {
-            findPreference(Preferences.USB_WIDTH).setEnabled(false);
-            findPreference(Preferences.USB_HEIGHT).setEnabled(false);
-            findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(true);
-        } else {
+        if (video_source.equals(Preferences.VIDEO_SOURCE_USB)) {
             findPreference(Preferences.USB_WIDTH).setEnabled(true);
             findPreference(Preferences.USB_HEIGHT).setEnabled(true);
             findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(false);
+        } else if (video_source.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+            findPreference(Preferences.USB_WIDTH).setEnabled(false);
+            findPreference(Preferences.USB_HEIGHT).setEnabled(false);
+            findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(false);
+        } else {
+            findPreference(Preferences.USB_WIDTH).setEnabled(false);
+            findPreference(Preferences.USB_HEIGHT).setEnabled(false);
+            findPreference(Preferences.VIDEO_RESOLUTION).setEnabled(true);
         }
     }
 

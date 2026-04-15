@@ -26,6 +26,7 @@ import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -36,6 +37,9 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.slider.Slider;
@@ -73,14 +77,18 @@ public class Camera2Fragment extends Fragment
     private FloatingActionButton pictureButton;
     private FloatingActionButton flashlight;
     private View whiteOverlay;
+    private View screenCaptureOverlay;
     private FloatingActionButton videoSourceButton;
     private FloatingActionButton switchCameraButton;
     private Slider zoomSlider;
 
     private boolean service_bound = false;
+    private boolean awaitingScreenCapturePermission = false;
     private Camera2Service camera_service;
     private long last_fix_time = 0;
     private FirebaseAnalytics mFirebaseAnalytics;
+
+    private ActivityResultLauncher<Intent> screenCaptureLauncher;
 
     @Override
     public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceBundle) {
@@ -129,6 +137,7 @@ public class Camera2Fragment extends Fragment
                 Log.e(LOGTAG, "observer service null");
             }
 
+            // Preview is always started; when Screen is selected but MediaProjection not granted, service uses camera fallback.
             if (openGlView.getHolder().getSurface().isValid() && camera_service != null) {
                 camera_service.startPreview(openGlView);
                 Log.d(LOGTAG, "Observer started preview");
@@ -176,6 +185,24 @@ public class Camera2Fragment extends Fragment
                 }
 
                 setStatusState();
+                // If we were in screen mode and the stream stopped externally (e.g. network),
+                // try to restore the local camera preview.
+                String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource != null && videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)
+                        && camera_service != null && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                    if (screenCaptureOverlay != null) {
+                        screenCaptureOverlay.setVisibility(View.GONE);
+                    }
+                    // If a screen capture token already exists, keep preview hidden while idle in
+                    // screen mode (avoids rotated camera fallback confusion after stop).
+                    if (camera_service.hasScreenCapture()) {
+                        openGlView.setVisibility(View.INVISIBLE);
+                        camera_service.stopPreview();
+                    } else {
+                        openGlView.setVisibility(View.VISIBLE);
+                        camera_service.startPreview(openGlView);
+                    }
+                }
             } else if (action != null && action.equals(Camera2Service.TOOK_PICTURE)) {
                 activity.runOnUiThread(() -> whiteOverlay.setVisibility(View.INVISIBLE));
             } else if (action != null && action.equals(Camera2Service.NEW_BITRATE)) {
@@ -224,6 +251,48 @@ public class Camera2Fragment extends Fragment
         super.onCreate(savedInstanceState);
         pref = PreferenceManager.getDefaultSharedPreferences(activity);
         pref.registerOnSharedPreferenceChangeListener(this);
+
+        screenCaptureLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    awaitingScreenCapturePermission = false;
+                    if (activity == null) return;
+                    if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null && camera_service != null) {
+                        boolean prepared = camera_service.setScreenCaptureResult(result.getResultCode(), result.getData());
+                        if (!prepared) {
+                            Toast.makeText(activity, R.string.error_preparing_stream, Toast.LENGTH_LONG).show();
+                            bStartStop.setImageResource(R.drawable.ic_record);
+                            unlockScreenOrientation();
+                            return;
+                        }
+                        setPreviewSurfaceSecure(true);
+
+                        if (!service_bound) {
+                            activity.bindService(new Intent(activity, Camera2Service.class), mConnection, Context.BIND_IMPORTANT);
+                        } else {
+                            // Already bound (e.g. camera fallback preview); re-prepare with ScreenSource and start streaming.
+                            camera_service.startStream();
+                            if (openGlView != null) {
+                                openGlView.setVisibility(View.INVISIBLE);
+                            }
+                        }
+                        bStartStop.setImageResource(R.drawable.stop);
+                        lockScreenOrientation();
+                        if (pref.getBoolean(Preferences.RECORD_VIDEO, Preferences.RECORD_VIDEO_DEFAULT)) {
+                            tvRecording.setText(R.string.yes);
+                            tvRecording.setTextColor(Color.GREEN);
+                        }
+                        if (screenCaptureOverlay != null) {
+                            screenCaptureOverlay.setVisibility(View.VISIBLE);
+                            screenCaptureOverlay.bringToFront();
+                        }
+                    } else {
+                        Toast.makeText(activity, "Screen capture permission denied", Toast.LENGTH_LONG).show();
+                        bStartStop.setImageResource(R.drawable.ic_record);
+                        unlockScreenOrientation();
+                    }
+                }
+        );
 
         activity.getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -306,6 +375,18 @@ public class Camera2Fragment extends Fragment
     public void onPause() {
         super.onPause();
         Log.d(LOGTAG, "onPause");
+        if (screenCaptureOverlay != null) {
+            screenCaptureOverlay.setVisibility(View.GONE);
+        }
+        if (openGlView != null) {
+            openGlView.setVisibility(View.VISIBLE);
+        }
+        // Launching the Android screen-capture chooser briefly pauses this fragment; avoid
+        // tearing down camera/GL preview during that handoff to reduce dead-thread callback noise.
+        if (awaitingScreenCapturePermission) {
+            Log.d(LOGTAG, "onPause while awaiting screen-capture permission; keeping preview alive");
+            return;
+        }
         if (camera_service != null)
             camera_service.stopPreview();
     }
@@ -314,11 +395,46 @@ public class Camera2Fragment extends Fragment
     public void onResume() {
         super.onResume();
         Log.d(LOGTAG, "onResume");
-        if (camera_service != null & openGlView != null & openGlView.getHolder().getSurface().isValid()) {
-            camera_service.startPreview(openGlView);
-            Log.d(LOGTAG,"onPause startedd preview");
+        String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+        boolean isScreenStreaming = Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource)
+                && camera_service != null && camera_service.hasScreenCapture()
+                && camera_service.getStream().isStreaming();
+
+        if (isScreenStreaming) {
+            setPreviewSurfaceSecure(true);
+            // Force preview surface behind our overlay so recursive capture is not visible.
+            if (openGlView instanceof SurfaceView) {
+                SurfaceView sv = (SurfaceView) openGlView;
+                sv.setZOrderOnTop(false);
+                sv.setZOrderMediaOverlay(false);
+            }
+            if (openGlView != null) {
+                openGlView.setVisibility(View.INVISIBLE);
+            }
+            if (screenCaptureOverlay != null) {
+                screenCaptureOverlay.setVisibility(View.VISIBLE);
+                screenCaptureOverlay.bringToFront();
+            }
+            if (camera_service != null && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                camera_service.startPreview(openGlView);
+            }
         } else {
-            Log.d(LOGTAG, "onPause didn't start preview " + (camera_service == null) + " " + (openGlView == null));
+            setPreviewSurfaceSecure(false);
+            boolean screenIdleWithCapture = Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource)
+                    && camera_service != null && camera_service.hasScreenCapture();
+            if (openGlView != null) {
+                openGlView.setVisibility(screenIdleWithCapture ? View.INVISIBLE : View.VISIBLE);
+            }
+            if (screenCaptureOverlay != null) {
+                screenCaptureOverlay.setVisibility(View.GONE);
+            }
+            if (!screenIdleWithCapture
+                    && camera_service != null && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                camera_service.startPreview(openGlView);
+                Log.d(LOGTAG, "onResume started preview");
+            } else {
+                Log.d(LOGTAG, "onResume didn't start preview " + (camera_service == null) + " " + (openGlView == null));
+            }
         }
     }
 
@@ -351,6 +467,7 @@ public class Camera2Fragment extends Fragment
         switchCameraButton = activity.findViewById(R.id.switch_camera);
         switchCameraButton.setOnClickListener(this);
         whiteOverlay = activity.findViewById(R.id.white_color_overlay);
+        screenCaptureOverlay = activity.findViewById(R.id.screen_capture_overlay);
 
         flashlight = activity.findViewById(R.id.flashlight);
         flashlight.setOnClickListener(this);
@@ -366,10 +483,21 @@ public class Camera2Fragment extends Fragment
         requireActivity().getWindow().setNavigationBarColor(Color.TRANSPARENT);
     }
 
+    private void setPreviewSurfaceSecure(boolean secure) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && openGlView instanceof SurfaceView) {
+            ((SurfaceView) openGlView).setSecure(secure);
+            Log.d(LOGTAG, "setPreviewSurfaceSecure: " + secure);
+        }
+    }
+
     private final ServiceConnection mConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder service) {
             Log.d(LOGTAG, "onServiceConnected");
-            camera_service.startPreview(openGlView);
+            String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+            // For screen mode, don't start preview before startStream; that can leave camera fallback active.
+            if (!Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource)) {
+                camera_service.startPreview(openGlView);
+            }
             service_bound = true;
             bStartStop.setImageResource(R.drawable.stop);
             tvLocationFix.setText(R.string.no);
@@ -377,6 +505,16 @@ public class Camera2Fragment extends Fragment
             tvTakServer.setText(R.string.no);
             tvTakServer.setTextColor(Color.RED);
             camera_service.startStream();
+            if (Preferences.VIDEO_SOURCE_SCREEN.equals(videoSource) && camera_service.hasScreenCapture()) {
+                setPreviewSurfaceSecure(true);
+                if (openGlView != null) {
+                    openGlView.setVisibility(View.INVISIBLE);
+                }
+                if (screenCaptureOverlay != null) {
+                    screenCaptureOverlay.setVisibility(View.VISIBLE);
+                    screenCaptureOverlay.bringToFront();
+                }
+            }
             popupMenuHandler.stopClock();
             popupMenuHandler.toggleText();
         }
@@ -422,6 +560,45 @@ public class Camera2Fragment extends Fragment
         int id = v.getId();
         if (id == R.id.b_start_stop) {
             if (!service_bound) {
+                String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource != null && videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                        Toast.makeText(activity, "Screen streaming requires Android 5.0 or higher", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+
+                    if (camera_service == null) {
+                        Toast.makeText(activity, "Service not ready, please try again", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+
+                    if (!camera_service.hasScreenCapture()) {
+                        Intent captureIntent = camera_service.createScreenCaptureIntent();
+                        if (captureIntent != null) {
+                            camera_service.prepareForScreenCapture();
+                            awaitingScreenCapturePermission = true;
+                            bStartStop.setImageResource(R.drawable.stop);
+                            lockScreenOrientation();
+                            screenCaptureLauncher.launch(captureIntent);
+                        } else {
+                            Toast.makeText(activity, "Unable to start screen capture", Toast.LENGTH_LONG).show();
+                            bStartStop.setImageResource(R.drawable.ic_record);
+                            unlockScreenOrientation();
+                        }
+                        return;
+                    } else {
+                        // We already have capture permission; set local UI state immediately.
+                        setPreviewSurfaceSecure(true);
+                        if (openGlView != null) {
+                            openGlView.setVisibility(View.INVISIBLE);
+                        }
+                        if (screenCaptureOverlay != null) {
+                            screenCaptureOverlay.setVisibility(View.VISIBLE);
+                            screenCaptureOverlay.bringToFront();
+                        }
+                    }
+                }
+
                 activity.bindService(new Intent(activity, Camera2Service.class), mConnection, Context.BIND_IMPORTANT);
                 bStartStop.setImageResource(R.drawable.stop);
                 lockScreenOrientation();
@@ -436,6 +613,22 @@ public class Camera2Fragment extends Fragment
                 service_bound = false;
                 unlockScreenOrientation();
                 setStatusState();
+                setPreviewSurfaceSecure(false);
+                if (screenCaptureOverlay != null) {
+                    screenCaptureOverlay.setVisibility(View.GONE);
+                }
+                // After stopping a screen stream, return to local camera preview.
+                String videoSource = pref.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource != null && videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)
+                        && openGlView != null && openGlView.getHolder().getSurface().isValid()) {
+                    if (camera_service.hasScreenCapture()) {
+                        openGlView.setVisibility(View.INVISIBLE);
+                        camera_service.stopPreview();
+                    } else {
+                        openGlView.setVisibility(View.VISIBLE);
+                        camera_service.startPreview(openGlView);
+                    }
+                }
             }
         } else if (id == R.id.switch_camera) {
             camera_service.switchCamera();
@@ -553,6 +746,17 @@ public class Camera2Fragment extends Fragment
         Log.d(LOGTAG, "Got pref " + s);
         if (s != null && s.equals(Preferences.VIDEO_SOURCE)) {
             setZoomRange();
+            // If video source is no longer Screen, hide the screen-capture overlay.
+            if (screenCaptureOverlay != null) {
+                String videoSource = sharedPreferences.getString(Preferences.VIDEO_SOURCE, Preferences.VIDEO_SOURCE_DEFAULT);
+                if (videoSource == null || !videoSource.equals(Preferences.VIDEO_SOURCE_SCREEN)) {
+                    screenCaptureOverlay.setVisibility(View.GONE);
+                    setPreviewSurfaceSecure(false);
+                    if (openGlView != null) {
+                        openGlView.setVisibility(View.VISIBLE);
+                    }
+                }
+            }
         }
     }
 

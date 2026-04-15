@@ -10,6 +10,10 @@
                 android:title="@string/camera_uvc"
                 android:id="@+id/video_source_camera_uvc"
                 />
+            <item
+                android:title="@string/screen"
+                android:id="@+id/video_source_screen"
+                />
         </menu>
     </item>
     <item android:title="@string/filters">

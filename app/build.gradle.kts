@@ -15,6 +15,7 @@ plugins {
     id("com.android.application")
     id("com.google.gms.google-services")
     id("com.google.firebase.crashlytics")
+    id("io.github.reactivecircus.app-versioning") version "1.5.0"
 }
 
 android {
@@ -25,8 +26,6 @@ android {
         applicationId = "io.opentakserver.opentakicu"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
